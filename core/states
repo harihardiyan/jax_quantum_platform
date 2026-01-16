@@ -1,0 +1,25 @@
+from dataclasses import dataclass
+import jax.numpy as jnp
+from .hilbert import HilbertSpace
+
+@dataclass
+class StateVector:
+    """
+    State vektor |psi> dalam ruang Hilbert tertentu.
+    data: array kompleks shape (dim,)
+    """
+    hilbert: HilbertSpace
+    data: jnp.ndarray
+
+    def __post_init__(self):
+        if self.data.shape != (self.hilbert.dim,):
+            raise ValueError(
+                f"State shape {self.data.shape} tidak cocok dengan dim Hilbert {self.hilbert.dim}"
+            )
+
+    def norm(self):
+        return jnp.sqrt(jnp.vdot(self.data, self.data).real)
+
+    def normalized(self):
+        n = self.norm()
+        return StateVector(self.hilbert, self.data / n)
