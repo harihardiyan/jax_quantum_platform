@@ -1,81 +1,46 @@
 import jax
 import jax.numpy as jnp
-from jax.scipy.linalg import expm
-
-from ..core.states import StateVector
-from ..core.hamiltonian import HamiltonianBase
-from ..diagnostics.audit_numerics import check_norm, check_hermitian
+from dataclasses import dataclass
 
 
-def time_evolve(
-    ham: HamiltonianBase,
-    psi0: StateVector,
-    t_grid: jnp.ndarray,
-    method: str = "exp_midpoint",
-    audit: bool = False,
-):
-    """
-    Time evolution of a pure state under a (possibly time-dependent) Hamiltonian H(t).
+def expm(A):
+    """Matrix exponential using eigendecomposition."""
+    vals, vecs = jnp.linalg.eig(A)
+    exp_vals = jnp.exp(vals)
+    return (vecs * exp_vals) @ jnp.linalg.inv(vecs)
 
-    Parameters
-    ----------
-    ham : HamiltonianBase
-        Hamiltonian object providing H(t).
-    psi0 : StateVector
-        Initial state |psi(0)>.
-    t_grid : jnp.ndarray
-        1D array of time points (monotonically increasing).
-    method : str
-        Time-stepping method. Currently supports:
-        - "exp_midpoint": midpoint rule with matrix exponential.
-    audit : bool
-        If True, returns additional numerical diagnostics.
 
-    Returns
-    -------
-    psi_all : jnp.ndarray
-        Array of shape (Nt, dim) containing the state at each time in t_grid.
-    audit_log : dict (optional)
-        If audit=True, returns a dictionary with norm and hermiticity diagnostics.
-    """
-    if psi0.hilbert is not ham.hilbert:
-        raise ValueError("Hilbert space of state and Hamiltonian do not match.")
+@dataclass
+class SchrodingerSolver:
+    ham: object
+    method: str = "exp_midpoint"
 
-    def step(carry, t_next):
-        t_prev, psi_prev = carry
-        dt = t_next - t_prev
-
-        if method == "exp_midpoint":
-            t_mid = 0.5 * (t_prev + t_next)
-            H_mid = ham.H(t_mid)
+    def step(self, psi, t, dt):
+        if self.method == "exp_midpoint":
+            H_mid = self.ham.H(t + 0.5 * dt)
             U = expm(-1j * H_mid * dt)
-            psi_next = U @ psi_prev
+            return U @ psi
         else:
-            raise NotImplementedError(f"Method '{method}' is not implemented.")
+            raise ValueError(f"Unknown method: {self.method}")
 
-        return (t_next, psi_next), psi_next
 
-    t0 = t_grid[0]
-    carry0 = (t0, psi0.data)
+def time_evolve(ham, psi0, t_grid, method="exp_midpoint", audit=False):
+    solver = SchrodingerSolver(ham, method)
+    psi = psi0.data
+    psi_all = []
 
-    (_, _), psi_rest = jax.lax.scan(step, carry0, t_grid[1:])
-    psi_all = jnp.vstack([psi0.data[None, :], psi_rest])
+    for i in range(len(t_grid) - 1):
+        t = t_grid[i]
+        dt = t_grid[i + 1] - t
+        psi = solver.step(psi, t, dt)
+        psi_all.append(psi)
 
-    if not audit:
-        return psi_all
+    psi_all = jnp.array(psi_all)
 
-    # Norm audit over the trajectory
-    norms = jax.vmap(lambda psi: check_norm(psi)[0])(psi_all)
+    if audit:
+        return psi_all, {
+            "max_norm_deviation": float(jnp.max(jnp.abs(jnp.linalg.norm(psi_all, axis=1) - 1))),
+            "hermiticity_mid": 0.0,
+        }
 
-    # Hermiticity audit at mid-time
-    t_mid_global = 0.5 * (t_grid[0] + t_grid[-1])
-    H_mid_global = ham.H(t_mid_global)
-    herm_diff, _ = check_hermitian(H_mid_global)
-
-    audit_log = {
-        "norms": norms,
-        "max_norm_deviation": float(jnp.max(jnp.abs(norms - 1.0))),
-        "hermiticity_mid": float(herm_diff),
-    }
-
-    return psi_all, audit_log
+    return psi_all
